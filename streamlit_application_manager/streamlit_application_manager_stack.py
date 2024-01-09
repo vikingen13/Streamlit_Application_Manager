@@ -12,6 +12,7 @@ from aws_cdk import (
     aws_ec2 as ec2,
     RemovalPolicy,
     aws_iam as iam,
+    CfnOutput
 
     # aws_sqs as sqs,
 )
@@ -44,6 +45,7 @@ class StreamlitApplicationManagerStack(Stack):
         listener.add_action("DefaultAction",
                             action=elbv2.ListenerAction.fixed_response(status_code=404))
         
+        myNestedStacks = []
 
         #for each application in the config file, we create an app and add a trarget rule
         for i,app_name in enumerate(Config.APPLICATION_LIST):
@@ -66,8 +68,21 @@ class StreamlitApplicationManagerStack(Stack):
                                     targets=[myNestedStack.service]
                                 
             )
+            
+            myNestedStacks.append(myNestedStack)
 
+        for stack in myNestedStacks:
+            CfnOutput(
+                self, f"{stack.app_name}_url",
+                value=f"{alb.load_balancer_dns_name}/{stack.app_name}/",
+                description="url of the application",
+            )
 
+            CfnOutput(
+                self, f"{stack.app_name}_repository",
+                value=f"git clone {stack.codecommitrepo.repository_clone_url_grc}",
+                description="to clone the application",
+            )
 
         
         
@@ -86,7 +101,6 @@ class StreamlitApplicationStack(NestedStack):
     #the service shall not have a public IP address
     def __init__(self, scope: Construct, construct_id: str, app_name: str, StreamlitCluster: ecs.Cluster, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
-
 
         fargate_task_definition = ecs.FargateTaskDefinition(
             self,
@@ -203,3 +217,5 @@ class StreamlitApplicationStack(NestedStack):
         )
 
         self.service = service
+        self.app_name = app_name
+        self.codecommitrepo = repository
