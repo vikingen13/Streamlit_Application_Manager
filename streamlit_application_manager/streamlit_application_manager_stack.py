@@ -12,6 +12,8 @@ from aws_cdk import (
     aws_ec2 as ec2,
     RemovalPolicy,
     aws_iam as iam,
+    aws_cloudfront as cloudfront,
+    aws_cloudfront_origins as origins,
     CfnOutput
 
     # aws_sqs as sqs,
@@ -20,6 +22,9 @@ import os
 from constructs import Construct
 
 from config_file import Config
+
+CUSTOM_HEADER_NAME = "X-Custom-Header"
+CUSTOM_HEADER_VALUE = "sdmlkfsdmlkf"
 
 class StreamlitApplicationManagerStack(Stack):
 
@@ -30,13 +35,36 @@ class StreamlitApplicationManagerStack(Stack):
         cluster = ecs.Cluster(self, "StreamlitApplicationsCluster",
                               vpc=ec2.Vpc(self, "StreamlitApplicationsVPC", max_azs=2),
                               cluster_name="StreamlitApplicationsCluster")
-        
+
+
         #create an ALB that will connect to the cluster services and will be accessed through a cloudfront distribution
         alb = elbv2.ApplicationLoadBalancer(self, "StreamlitApplicationsALB",
                                       vpc=cluster.vpc,
                                       internet_facing=True,
                                       load_balancer_name="StreamlitApplications-alb")
         
+
+        # Add ALB as CloudFront Origin
+        origin = origins.LoadBalancerV2Origin(
+            alb,
+            custom_headers={CUSTOM_HEADER_NAME: CUSTOM_HEADER_VALUE},
+            origin_shield_enabled=False,
+            protocol_policy=cloudfront.OriginProtocolPolicy.HTTP_ONLY,
+        )
+
+        cloudfront_distribution = cloudfront.Distribution(
+                    self,
+                    f"StreamlitApplicationsCfDist",
+                    default_behavior=cloudfront.BehaviorOptions(
+                        origin=origin,
+                        viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                        allowed_methods=cloudfront.AllowedMethods.ALLOW_ALL,
+                        cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
+                        origin_request_policy=cloudfront.OriginRequestPolicy.ALL_VIEWER,
+                    ),
+                )
+
+
         #create a listener on the ALB that will forward traffic to the cluster services
         listener = alb.add_listener("StreamlitApplicationsListener",
                                     port=80,
@@ -44,6 +72,18 @@ class StreamlitApplicationManagerStack(Stack):
         #create a default action for the listener that return 404 error
         listener.add_action("DefaultAction",
                             action=elbv2.ListenerAction.fixed_response(status_code=404))
+        
+        # Grant access to Bedrock
+        bedrock_policy = iam.Policy(self, "StreamlitApplicationsBedrockPolicy",
+                                    statements=[
+                                        iam.PolicyStatement(
+                                            actions=["bedrock:InvokeModel"],
+                                            resources=["*"]
+                                        )
+                                    ]
+                                    )
+        
+        
         
         myNestedStacks = []
 
@@ -62,19 +102,22 @@ class StreamlitApplicationManagerStack(Stack):
                                 priority=i+1,
                                 health_check=elbv2.HealthCheck(path=f'/{app_name}/'),
                                 conditions=[
+                                    elbv2.ListenerCondition.http_header(CUSTOM_HEADER_NAME,[CUSTOM_HEADER_VALUE]),
                                     elbv2.ListenerCondition.path_patterns([f"/{app_name}/*"])
                                     ],
                                     protocol=elbv2.ApplicationProtocol.HTTP,
                                     targets=[myNestedStack.service]
                                 
             )
+
+            myNestedStack.service.task_definition.task_role.attach_inline_policy(bedrock_policy)
             
             myNestedStacks.append(myNestedStack)
 
         for stack in myNestedStacks:
             CfnOutput(
                 self, f"{stack.app_name}_url",
-                value=f"{alb.load_balancer_dns_name}/{stack.app_name}/",
+                value=f"{cloudfront_distribution.domain_name}/{stack.app_name}/",
                 description="url of the application",
             )
 
