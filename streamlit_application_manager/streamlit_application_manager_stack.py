@@ -6,6 +6,8 @@ from aws_cdk import (
     aws_codepipeline as codepipeline,
     aws_codepipeline_actions as codepipeline_actions,
     aws_codebuild as codebuild,
+    aws_cognito as cognito,
+    aws_secretsmanager as secretsmanager,
     aws_ecs as ecs,
     aws_ecr as ecr,
     aws_elasticloadbalancingv2 as elbv2,
@@ -14,6 +16,7 @@ from aws_cdk import (
     aws_iam as iam,
     aws_cloudfront as cloudfront,
     aws_cloudfront_origins as origins,
+    SecretValue,
     CfnOutput
 
     # aws_sqs as sqs,
@@ -30,6 +33,33 @@ class StreamlitApplicationManagerStack(Stack):
 
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
+
+
+        # Create Cognito user pool
+        user_pool = cognito.UserPool(self, "StreamlitApplicationsUserPool")
+
+        # Create Cognito client
+        user_pool_client = cognito.UserPoolClient(self, f"StreamlitApplicationsUserPoolClient",
+                                                  user_pool=user_pool,
+                                                  generate_secret=True
+                                                  )
+        
+
+        # Store Cognito parameters in a Secrets Manager secret
+        secret = secretsmanager.Secret(self, "StreamlitApplicationsParamCognitoSecret",
+                                       secret_object_value={
+                                           "pool_id": SecretValue.unsafe_plain_text(user_pool.user_pool_id),
+                                           "app_client_id": SecretValue.unsafe_plain_text(user_pool_client.user_pool_client_id),
+                                           "app_client_secret": user_pool_client.user_pool_client_secret
+                                       },
+                                       # This secret name should be identical
+                                       # to the one defined in the Streamlit
+                                       # container
+                                       secret_name="StreamlitApplicationsParamCognitoSecret"
+                                       )
+
+
+
 
         # Deploy an ECS Cluster named "StreamLit Cluster in a new VPC on 2 AZ
         cluster = ecs.Cluster(self, "StreamlitApplicationsCluster",
@@ -111,6 +141,9 @@ class StreamlitApplicationManagerStack(Stack):
             )
 
             myNestedStack.service.task_definition.task_role.attach_inline_policy(bedrock_policy)
+            # Grant access to read the secret in Secrets Manager
+            secret.grant_read(myNestedStack.service.task_definition.task_role)
+
             
             myNestedStacks.append(myNestedStack)
 
@@ -127,7 +160,11 @@ class StreamlitApplicationManagerStack(Stack):
                 description="to clone the application",
             )
 
-        
+        CfnOutput(
+            self, f"userPoolId",
+            value=f"aws cognito-idp admin-create-user --user-pool-id {user_pool.user_pool_id} --username admin --temporary-password admin12345",
+            description="to create a first user",
+        )
         
 
 

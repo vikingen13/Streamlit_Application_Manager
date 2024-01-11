@@ -4,8 +4,26 @@ import boto3
 from utils.auth import Auth
 from utils.llm import Llm
 
+# ID of Secrets Manager containing cognito parameters
+secrets_manager_id = "StreamlitApplicationsParamCognitoSecret"
+
+# Initialise CognitoAuthenticator
+authenticator = Auth.get_authenticator(secrets_manager_id)
+
+# Authenticate user, and stop here if not logged in
+is_logged_in = authenticator.login()
+if not is_logged_in:
+    st.stop()
+
+
+def logout():
+    authenticator.logout()
+
+
+
 with st.sidebar:
-    st.text(f"Welcome")
+    st.text(f"Welcome {authenticator.get_username()}")
+    st.button("Logout", "logout_btn", on_click=logout)
     
 
 # Add title on the page
