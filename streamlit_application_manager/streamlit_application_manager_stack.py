@@ -12,6 +12,7 @@ from aws_cdk import (
     aws_ecr as ecr,
     aws_elasticloadbalancingv2 as elbv2,
     aws_ec2 as ec2,
+    aws_s3 as s3,
     RemovalPolicy,
     aws_iam as iam,
     aws_cloudfront as cloudfront,
@@ -25,6 +26,7 @@ import os
 from constructs import Construct
 
 from config_file import Config
+from utils.helpers import helpers
 
 CUSTOM_HEADER_NAME = "X-Custom-Header"
 CUSTOM_HEADER_VALUE = "sdmlkfsdmlkf"
@@ -102,6 +104,12 @@ class StreamlitApplicationManagerStack(Stack):
         #create a default action for the listener that return 404 error
         listener.add_action("DefaultAction",
                             action=elbv2.ListenerAction.fixed_response(status_code=404))
+
+        #create a S3 bucket for applications content
+        application_content_bucket = s3.Bucket(self, "StreamlitApplicationsBucket",
+                            removal_policy=RemovalPolicy.DESTROY,
+                            auto_delete_objects=True)
+
         
         # Grant access to Bedrock
         bedrock_policy = iam.Policy(self, "StreamlitApplicationsBedrockPolicy",
@@ -113,7 +121,21 @@ class StreamlitApplicationManagerStack(Stack):
                                     ]
                                     )
         
-        
+        #grant access to transcribe
+        transcribe_policy = iam.Policy(self, "StreamlitApplicationsTranscribePolicy",
+                                        statements=[
+                                            iam.PolicyStatement(
+                                                actions=["transcribe:StartTranscriptionJob",    
+                                                         "transcribe:UntagResource",
+                                                        "transcribe:GetTranscriptionJob",
+                                                        "transcribe:TagResource",
+                                                        "transcribe:StartTranscriptionJob",
+                                                        "transcribe:ListTranscriptionJobs",
+                                                        "transcribe:ListTagsForResource"],
+                                                resources=["*"]
+                                            )
+                                        ]
+                                        )
         
         myNestedStacks = []
 
@@ -129,7 +151,7 @@ class StreamlitApplicationManagerStack(Stack):
             listener.add_targets(app_name,
                                 target_group_name=app_name,
                                 port=8501,
-                                priority=i+1,
+                                priority=helpers.get_hash(app_name),
                                 health_check=elbv2.HealthCheck(path=f'/{app_name}/'),
                                 conditions=[
                                     elbv2.ListenerCondition.http_header(CUSTOM_HEADER_NAME,[CUSTOM_HEADER_VALUE]),
@@ -141,9 +163,13 @@ class StreamlitApplicationManagerStack(Stack):
             )
 
             myNestedStack.service.task_definition.task_role.attach_inline_policy(bedrock_policy)
+            myNestedStack.service.task_definition.task_role.attach_inline_policy(transcribe_policy)
+
             # Grant access to read the secret in Secrets Manager
             secret.grant_read(myNestedStack.service.task_definition.task_role)
-
+            
+            # Grant access to write to the bucket
+            application_content_bucket.grant_read_write(myNestedStack.service.task_definition.task_role, f"{app_name}/*")
             
             myNestedStacks.append(myNestedStack)
 
@@ -158,6 +184,12 @@ class StreamlitApplicationManagerStack(Stack):
                 self, f"{stack.app_name}_repository",
                 value=f"git clone {stack.codecommitrepo.repository_clone_url_grc}",
                 description="to clone the application",
+            )
+
+            CfnOutput(
+                self, f"{stack.app_name}_bucket",
+                value=f"{application_content_bucket.bucket_name}/{stack.app_name}/",
+                description="Bucket and prefix for the app"
             )
 
         CfnOutput(
@@ -218,7 +250,8 @@ class StreamlitApplicationStack(NestedStack):
         #create an ECR repository for the app
         imagerepository = ecr.Repository(self, f"{app_name}Repository",
                                   repository_name=f"{app_name}-imagerepo",
-                                  removal_policy=RemovalPolicy.DESTROY
+                                  removal_policy=RemovalPolicy.DESTROY,
+                                  auto_delete_images=True
                                  )
         
         #create a code commit repository from the base_app source code
